@@ -1,98 +1,99 @@
+import machine
 import time
-from machine import Pin, I2C
 
+# ==========================================
+# 1. PARAMETRIZAÇÃO DO SISTEMA
+# ==========================================
+LIMITE_TEMPO_X = 5000       # Tempo máximo de porta aberta em milissegundos (5 segundos)
+LIMITE_VARIACAO_Y = 3.0     # Variação máxima de temperatura tolerada (Delta T em °C)
 
-LIMITE_TEMPO_X = 3000     
-LIMITE_VARIACAO_Y = 3.0   
+# ==========================================
+# 2. CONFIGURAÇÃO DE HARDWARE
+# ==========================================
+# Botão (Fim de curso da Porta)
+# Pelo diagrama, btn1: 0 = Aberto (Solto), btn1: 1 = Fechado (Pressionado)
+pino_porta = machine.Pin(4, machine.Pin.IN, machine.Pin.PULL_UP)
 
+# Configuração I2C para o MPU6050 (Pinos 21 SDA, 22 SCL)
+i2c = machine.I2C(0, scl=machine.Pin(22), sda=machine.Pin(21))
 
-btn1 = Pin(4, Pin.IN, Pin.PULL_UP)
+# Inicializa/Acorda o MPU6050 (Escreve 0 no registrador de Power Management)
 try:
-    i2c = I2C(0, scl=Pin(22), sda=Pin(21), freq=400000)
-except Exception:
-    i2c = None
+    i2c.writeto_mem(0x68, 0x6B, b'\x00')
+except OSError:
+    print("Erro: MPU6050 não encontrado no barramento I2C.")
 
 def ler_temperatura():
-    if not i2c: 
-        return 20.0
+    """Lê os registradores de temperatura do MPU6050 e converte para Celsius"""
     try:
-        dados = i2c.readfrom_mem(0x68, 0x41, 2)
-        temp = (int.from_bytes(dados, 'big') / 340.0) + 36.53
-        return temp
-    except Exception:
-        return 20.0
+        raw = i2c.readfrom_mem(0x68, 0x41, 2)
+        val = raw[0] << 8 | raw[1]
+        # Converte para inteiro com sinal (16 bits)
+        if val > 32767:
+            val -= 65536
+        # Fórmula do datasheet do MPU6050
+        return (val / 340.0) + 36.53
+    except OSError:
+        return 0.0
 
-def main():
-    print("Sistema de Monitoramento Inicializado")
+# ==========================================
+# 3. INICIALIZAÇÃO
+# ==========================================
+print("Sistema de Monitoramento Inicializado")
 
-    tempo_abertura_porta = 0
-    alarme_porta_ativo = False
-    alarme_termico_ativo = False
+# Variáveis de Estado
+temp_referencia = ler_temperatura()
+tempo_inicio_abertura = 0
 
-    temperatura_referencia = 20.0  
-    referencia_capturada = False
-    tempo_seguro_inicio = 0  
+alarme_porta = False
+alarme_temp = False
+sistema_normal = True
 
-    # Variáveis do Anti-Ruído (Debounce)
-    ultimo_estado_raw = -1
-    ultimo_tempo_debounce = 0
-    status_porta = 1 # Assume porta fechada no início
+# ==========================================
+# 4. LAÇO PRINCIPAL (FIRMWARE)
+# ==========================================
+while True:
+    # --- Leituras de Sensores ---
+    estado_porta = pino_porta.value() # 0 = Aberto, 1 = Fechado
+    porta_aberta = (estado_porta == 0)
+    
+    temp_atual = ler_temperatura()
+    delta_t = temp_atual - temp_referencia
+    
+    # --- Lógica B: Tempo de Porta Aberta ---
+    if porta_aberta:
+        if tempo_inicio_abertura == 0:
+            tempo_inicio_abertura = time.ticks_ms()
+        else:
+            tempo_decorrido = time.ticks_diff(time.ticks_ms(), tempo_inicio_abertura)
+            if tempo_decorrido >= LIMITE_TEMPO_X and not alarme_porta:
+                alarme_porta = True
+                print("ALERTA: Porta aberta por muito tempo!")
+    else:
+        tempo_inicio_abertura = 0 # Reseta o cronômetro se a porta fechar
 
-    while True:
-        agora = time.ticks_ms()
+    # --- Lógica C: Elevação Térmica ---
+    if delta_t >= LIMITE_VARIACAO_Y:
+        if not alarme_temp:
+            alarme_temp = True
+            print("ALERTA: Degradacao termica detectada!")
+            
+    # --- Atualização do Status Geral ---
+    if alarme_porta or alarme_temp:
+        sistema_normal = False
 
-        # --- FILTRO ANTI-RUÍDO (DEBOUNCE) ---
-        estado_raw = 1 if btn1.value() == 0 else 0
-        if estado_raw != ultimo_estado_raw:
-            ultimo_tempo_debounce = agora
-            ultimo_estado_raw = estado_raw
-        
-        # Só aceita a mudança se o botão ficar estável por mais de 50ms
-        if time.ticks_diff(agora, ultimo_tempo_debounce) > 50:
-            status_porta = estado_raw
-
-        # --- LEITURA TÉRMICA ---
-        temp_atual = ler_temperatura()
-
-        if status_porta == 1 and not referencia_capturada:
-            temperatura_referencia = temp_atual
-            referencia_capturada = True
-        
-        # --- ALARME DA PORTA ---
-        if status_porta == 0:  
-            if tempo_abertura_porta == 0:
-                tempo_abertura_porta = agora
-            else:
-                if not alarme_porta_ativo and (time.ticks_diff(agora, tempo_abertura_porta) >= LIMITE_TEMPO_X):
-                    print("ALERTA: Porta aberta por muito tempo!")
-                    alarme_porta_ativo = True
-        else:  
-            tempo_abertura_porta = 0
-
-        # --- ALARME TÉRMICO ---
-        if referencia_capturada:
-            delta_t = temp_atual - temperatura_referencia
-            if delta_t >= LIMITE_VARIACAO_Y and not alarme_termico_ativo:
-                print("ALERTA: Degradacao termica detectada!")
-                alarme_termico_ativo = True
-
-            # --- NORMALIZAÇÃO ---
-            condicao_porta_segura = (status_porta == 1)
-            condicao_termica_segura = (delta_t < LIMITE_VARIACAO_Y)
-
-            if condicao_porta_segura and condicao_termica_segura:
-                if tempo_seguro_inicio == 0:
-                    tempo_seguro_inicio = agora
-                elif time.ticks_diff(agora, tempo_seguro_inicio) >= 1000:
-                    if alarme_porta_ativo or alarme_termico_ativo:
-                        print("Status: Sistema Normalizado.")
-                        alarme_porta_ativo = False
-                        alarme_termico_ativo = False
-                        referencia_capturada = False  
-            else:
-                tempo_seguro_inicio = 0  
-
-        time.sleep_ms(20)
-
-if __name__ == "__main__":
-    main()
+    # --- Lógica D: Normalização ---
+    # Só normaliza se a porta estiver fechada E a temperatura voltar ao gradiente aceitável
+    if not sistema_normal:
+        if not porta_aberta and delta_t < LIMITE_VARIACAO_Y:
+            alarme_porta = False
+            alarme_temp = False
+            sistema_normal = True
+            
+            # Ao normalizar com a porta fechada, atualizamos a referência base
+            temp_referencia = temp_atual 
+            
+            print("Status: Sistema Normalizado.")
+            
+    # Pequeno delay para evitar sobrecarga na CPU (non-blocking style)
+    time.sleep(0.1)
