@@ -1,101 +1,109 @@
 import time
 from machine import I2C, Pin
 
-# --- PARAMETRIZAÇÕES DO DESAFIO ---
-LIMITE_TEMPO_X = 5000     # Limite de tempo de porta aberta (5000ms = 5s)
-LIMITE_VARIACAO_Y = 3.0   # Limite da variação de temperatura Delta T (3.0 °C)
+# ---------------- PARAMETRIZAÇÕES DO DESAFIO ----------------
+LIMITE_TEMPO_X = 5000        # ms - tempo máximo de porta aberta (5s)
+LIMITE_VARIACAO_Y = 3.0      # °C - variação máxima de temperatura tolerada
+DEBOUNCE_NORMALIZACAO = 600  # ms - tempo de estabilidade para normalizar
 
-# --- PINAGEM DO HARDWARE ---
-PIN_BOTAO = 4            # GPIO 4
-I2C_SDA_PIN = 21         # GPIO 21
-I2C_SCL_PIN = 22         # GPIO 22
+# ---------------- HARDWARE E CONFIGURAÇÃO ----------------
+PIN_BOTAO = 4
+I2C_SDA_PIN = 21
+I2C_SCL_PIN = 22
 
-# --- REGISTRADORES DO MPU6050 ---
+# Botão ligado ao GND: PULL_UP (Fechado/Pressionado = 0, Aberto/Solto = 1)
+btn1 = Pin(PIN_BOTAO, Pin.IN, Pin.PULL_UP)
+
+# MPU6050 via I2C
+i2c = I2C(0, scl=Pin(I2C_SCL_PIN), sda=Pin(I2C_SDA_PIN), freq=400000)
 MPU6050_ADDR = 0x68
 PWR_MGMT_1 = 0x6B
 TEMP_OUT_H = 0x41
+TEMP_SENSITIVITY = 340.0
+TEMP_OFFSET = 36.53
 
-_last_valid_temp = 20.0
-
-def init_mpu6050(i2c):
+def mpu_init():
     try:
         i2c.writeto_mem(MPU6050_ADDR, PWR_MGMT_1, b'\x00')
     except Exception:
         pass
 
-def read_temperature(i2c):
-    global _last_valid_temp
+def ler_temperatura():
     try:
-        data = i2c.readfrom_mem(MPU6050_ADDR, TEMP_OUT_H, 2)
-        raw_temp = (data[0] << 8) | data[1]
-        if raw_temp > 32767:
-            raw_temp -= 65536
-        _last_valid_temp = (raw_temp / 340.0) + 36.53
-        return _last_valid_temp
+        dados = i2c.readfrom_mem(MPU6050_ADDR, TEMP_OUT_H, 2)
+        bruto = (dados[0] << 8) | dados[1]
+        if bruto > 32767:
+            bruto -= 65536
+        return (bruto / TEMP_SENSITIVITY) + TEMP_OFFSET
     except Exception:
-        return _last_valid_temp
+        return 20.0
 
 def main():
-    # IMPRIME A MENSAGEM PRIMEIRO (Garante o primeiro "Expected Text" do CI imediatamente)
+    mpu_init()
+
+    # Mensagem inicial para a esteira de CI do Wokwi
     print("Sistema de Monitoramento Inicializado")
 
-    # Inicialização do botão e I2C
-    btn = Pin(PIN_BOTAO, Pin.IN, Pin.PULL_UP)
-    
-    i2c = None
-    try:
-        i2c = I2C(0, scl=Pin(I2C_SCL_PIN), sda=Pin(I2C_SDA_PIN), freq=100000)
-        init_mpu6050(i2c)
-    except Exception:
-        pass
-
-    carimbo_tempo_abertura = None
-    temp_referencia = read_temperature(i2c) if i2c else 20.0
-
-    alerta_porta_ativo = False
-    alerta_temp_ativo = False
-    estava_em_alerta = False
+    porta_aberta_desde = None
+    temp_referencia = None
+    em_alarme = False
+    alarme_porta_disparado = False
+    alarme_temp_disparado = False
+    condicoes_seguras_desde = None
+    temp_atual = None
 
     while True:
-        # PULL_UP: btn.value() == 0 significa Pressionado / Fechado (estado_porta = 1)
-        estado_porta = 1 if btn.value() == 0 else 0
-        temp_atual = read_temperature(i2c) if i2c else 20.0
-        agora = time.ticks_ms()
+        # PULL_UP: Quando o botão está pressionado, ele fecha no GND e o pino lê 0
+        porta_fechada = (btn1.value() == 0)
 
-        # B. Lógica de Tempo de Porta Aberta
-        if estado_porta == 0:  # Aberta
-            if carimbo_tempo_abertura is None:
-                carimbo_tempo_abertura = agora
+        # Leitura da Temperatura
+        try:
+            temp_atual = ler_temperatura()
+        except Exception:
+            if temp_atual is None:
+                time.sleep_ms(50)
+                continue
 
-            tempo_decorrido = time.ticks_diff(agora, carimbo_tempo_abertura)
-            if tempo_decorrido >= LIMITE_TEMPO_X:
-                if not alerta_porta_ativo:
-                    print("ALERTA: Porta aberta por muito tempo!")
-                    alerta_porta_ativo = True
-                    estava_em_alerta = True
-        else:  # Fechada
-            carimbo_tempo_abertura = None
-            alerta_porta_ativo = False
-            if not alerta_temp_ativo:
-                temp_referencia = temp_atual
+        # Captura baseline inicial ou pós-normalização
+        if temp_referencia is None and porta_fechada and not em_alarme:
+            temp_referencia = temp_atual
 
-        # C. Lógica de Elevação Térmica
-        delta_t = temp_atual - temp_referencia
-        if delta_t >= LIMITE_VARIACAO_Y:
-            if not alerta_temp_ativo:
-                print("ALERTA: Degradacao termica detectada!")
-                alerta_temp_ativo = True
-                estava_em_alerta = True
+        delta_t = (temp_atual - temp_referencia) if temp_referencia is not None else 0.0
+
+        # ---- Lógica A: Porta Aberta por Tempo Limite X ----
+        if not porta_fechada:
+            if porta_aberta_desde is None:
+                porta_aberta_desde = time.ticks_ms()
+            tempo_aberta = time.ticks_diff(time.ticks_ms(), porta_aberta_desde)
+            if tempo_aberta >= LIMITE_TEMPO_X and not alarme_porta_disparado:
+                alarme_porta_disparado = True
+                em_alarme = True
+                print("ALERTA: Porta aberta por muito tempo!")
         else:
-            alerta_temp_ativo = False
+            porta_aberta_desde = None
 
-        # D. Normalização
-        if estado_porta == 1 and delta_t < LIMITE_VARIACAO_Y:
-            if estava_em_alerta:
+        # ---- Lógica B: Elevação Térmica Delta T >= Y ----
+        if delta_t >= LIMITE_VARIACAO_Y and not alarme_temp_disparado:
+            alarme_temp_disparado = True
+            em_alarme = True
+            print("ALERTA: Degradacao termica detectada!")
+
+        # ---- Lógica C: Normalização com Debounce ----
+        condicoes_seguras = porta_fechada and (delta_t < LIMITE_VARIACAO_Y)
+        if em_alarme and condicoes_seguras:
+            if condicoes_seguras_desde is None:
+                condicoes_seguras_desde = time.ticks_ms()
+            elif time.ticks_diff(time.ticks_ms(), condicoes_seguras_desde) >= DEBOUNCE_NORMALIZACAO:
+                em_alarme = False
+                alarme_porta_disparado = False
+                alarme_temp_disparado = False
+                temp_referencia = temp_atual
+                condicoes_seguras_desde = None
                 print("Status: Sistema Normalizado.")
-                estava_em_alerta = False
+        else:
+            condicoes_seguras_desde = None
 
-        time.sleep(0.02)
+        time.sleep_ms(50)
 
 if __name__ == "__main__":
     main()
