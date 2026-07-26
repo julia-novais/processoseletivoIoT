@@ -1,31 +1,19 @@
 {
   "version": 1,
-  "author": "Monitor de Porta e Temperatura",
+  "author": "IoT Monitor",
   "editor": "wokwi",
   "parts": [
-    { "type": "board-esp32-devkit-c-v4", "id": "esp", "top": 124.8, "left": 4.84, "attrs": {} },
-    { "type": "wokwi-mpu6050", "id": "imu1", "top": 51.82, "left": 11.92, "attrs": {} },
-    {
-      "type": "wokwi-pushbutton",
-      "id": "btn1",
-      "top": 255.8,
-      "left": 172.8,
-      "attrs": { "color": "blue" }
-    }
+    { "type": "board-esp32-devkit-c-v4", "id": "esp", "top": 0, "left": 0, "attrs": {} },
+    { "type": "wokwi-pushbutton", "id": "btn1", "top": 100, "left": 150, "attrs": { "color": "blue" } },
+    { "type": "wokwi-mpu6050", "id": "imu1", "top": -100, "left": 150, "attrs": {} }
   ],
   "connections": [
-    [ "esp:TX", "$serialMonitor:RX", "", [] ],
-    [ "esp:RX", "$serialMonitor:TX", "", [] ],
-    [ "imu1:SDA", "esp:D21", "blue", [ "v0" ] ],
-    [ "imu1:SCL", "esp:D22", "yellow", [ "v0" ] ],
-    [ "btn1:1.pth", "esp:D4", "green", [ "v0" ] ],
-    [ "btn1:2.pth", "esp:GND.2", "black", [ "v0" ] ],
-    [ "imu1:VCC", "esp:3V3", "red", [ "v-19.2", "h47.93" ] ],
-    [ "imu1:GND", "esp:GND.2", "black", [ "v-28.8", "h153.68" ] ],
-    [ "imu1:SDA", "esp:21", "green", [ "v-48", "h67.28", "v192" ] ],
-    [ "imu1:SCL", "esp:22", "green", [ "v-48", "h86.48", "v163.2" ] ],
-    [ "btn1:1.l", "esp:4", "blue", [ "h0" ] ],
-    [ "btn1:1.r", "esp:GND.3", "blue", [ "v0" ] ]
+    [ "esp:4", "btn1:1.l", "blue", [ "h0" ] ],
+    [ "esp:GND.1", "btn1:2.r", "black", [ "h0" ] ],
+    [ "esp:21", "imu1:SDA", "green", [ "h0" ] ],
+    [ "esp:22", "imu1:SCL", "yellow", [ "h0" ] ],
+    [ "esp:3V3", "imu1:VCC", "red", [ "h0" ] ],
+    [ "esp:GND.2", "imu1:GND", "black", [ "h0" ] ]
   ],
   "dependencies": {}
 }
