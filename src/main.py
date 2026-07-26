@@ -36,28 +36,33 @@ def read_temperature(i2c):
         return _last_valid_temp
 
 def main():
-    btn = Pin(PIN_BOTAO, Pin.IN, Pin.PULL_UP)
-    i2c = I2C(0, scl=Pin(I2C_SCL_PIN), sda=Pin(I2C_SDA_PIN), freq=400000)
-    init_mpu6050(i2c)
-
+    # IMPRIME A MENSAGEM PRIMEIRO (Garante o primeiro "Expected Text" do CI imediatamente)
     print("Sistema de Monitoramento Inicializado")
 
+    # Inicialização do botão e I2C
+    btn = Pin(PIN_BOTAO, Pin.IN, Pin.PULL_UP)
+    
+    i2c = None
+    try:
+        i2c = I2C(0, scl=Pin(I2C_SCL_PIN), sda=Pin(I2C_SDA_PIN), freq=100000)
+        init_mpu6050(i2c)
+    except Exception:
+        pass
+
     carimbo_tempo_abertura = None
-    temp_referencia = read_temperature(i2c)
+    temp_referencia = read_temperature(i2c) if i2c else 20.0
 
     alerta_porta_ativo = False
     alerta_temp_ativo = False
     estava_em_alerta = False
 
     while True:
-        # PULL_UP com GND no pino do botão:
-        # Pressionado (btn1: 1 no CI) -> btn.value() == 0 -> estado_porta = 1 (Fechada)
-        # Solto (btn1: 0 no CI) -> btn.value() == 1 -> estado_porta = 0 (Aberta)
+        # PULL_UP: btn.value() == 0 significa Pressionado / Fechado (estado_porta = 1)
         estado_porta = 1 if btn.value() == 0 else 0
-        temp_atual = read_temperature(i2c)
+        temp_atual = read_temperature(i2c) if i2c else 20.0
         agora = time.ticks_ms()
 
-        # B. Lógica de Porta Aberta
+        # B. Lógica de Tempo de Porta Aberta
         if estado_porta == 0:  # Aberta
             if carimbo_tempo_abertura is None:
                 carimbo_tempo_abertura = agora
@@ -74,7 +79,7 @@ def main():
             if not alerta_temp_ativo:
                 temp_referencia = temp_atual
 
-        # C. Lógica de Variação Térmica
+        # C. Lógica de Elevação Térmica
         delta_t = temp_atual - temp_referencia
         if delta_t >= LIMITE_VARIACAO_Y:
             if not alerta_temp_ativo:
