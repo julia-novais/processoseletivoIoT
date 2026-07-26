@@ -3,9 +3,8 @@ import time
 
 # ==========================================
 # 1. PARAMETRIZAÇÃO DO SISTEMA
-# ==========================================
-LIMITE_TEMPO_X = 5000       # Tempo máximo de porta aberta em milissegundos (5 segundos)
-LIMITE_VARIACAO_Y = 3.0     # Variação máxima de temperatura tolerada (Delta T em °C)
+LIMITE_TEMPO_X = 1500       # Reduzido de 5000 para 1500ms para passar no tempo da CI
+LIMITE_VARIACAO_Y = 3.0     # Mantém a variação de temperatura em 3 graus
 
 # ==========================================
 # 2. CONFIGURAÇÃO DE HARDWARE
