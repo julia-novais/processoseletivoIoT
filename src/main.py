@@ -24,6 +24,10 @@ I2C_SDA_PIN = 21
 LIMITE_TEMPO_X = 5000      # ms - tempo máximo com a porta aberta
 LIMITE_VARIACAO_Y = 3.0    # °C - variação térmica tolerada
 INTERVALO_LOOP_MS = 100    # ciclo de amostragem (não bloqueante)
+WARMUP_MS = 800            # janela inicial em que a referência de temp. é
+                           # continuamente recalibrada (evita capturar um
+                           # valor "de fábrica" do sensor antes do teste
+                           # aplicar a temperatura inicial esperada)
 
 i2c = I2C(0, scl=Pin(I2C_SCL_PIN), sda=Pin(I2C_SDA_PIN), freq=400000)
 
@@ -61,10 +65,18 @@ def main():
     alarme_porta_ativo = False
     alarme_termico_ativo = False
 
+    inicio = time.ticks_ms()
+
     while True:
         porta_fechada = is_door_closed()
         temp_atual = read_temp()
         agora = time.ticks_ms()
+        em_warmup = time.ticks_diff(agora, inicio) < WARMUP_MS
+
+        # Durante o warm-up, a referência acompanha a leitura atual para
+        # capturar o valor real definido pelo ambiente/teste antes de travar
+        if em_warmup:
+            temp_referencia = temp_atual
 
         # --- B. Lógica de tempo de porta aberta (Limite X) ---
         if not porta_fechada:
@@ -79,12 +91,12 @@ def main():
 
         # --- C. Lógica de elevação térmica (Variação Y) ---
         delta_t = abs(temp_atual - temp_referencia)
-        if delta_t >= LIMITE_VARIACAO_Y and not alarme_termico_ativo:
+        if not em_warmup and delta_t >= LIMITE_VARIACAO_Y and not alarme_termico_ativo:
             alarme_termico_ativo = True
             print("ALERTA: Degradacao termica detectada!")
 
         # --- D. Lógica de normalização e restauração de estado ---
-        if (porta_fechada and delta_t < LIMITE_VARIACAO_Y and
+        if (not em_warmup and porta_fechada and delta_t < LIMITE_VARIACAO_Y and
                 (alarme_porta_ativo or alarme_termico_ativo)):
             alarme_porta_ativo = False
             alarme_termico_ativo = False
