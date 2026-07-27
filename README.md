@@ -16,6 +16,7 @@
 **Funcionamento do sistema:** O ESP32 monitora continuamente o estado da porta por meio de um botão, que simula sua abertura e fechamento, e realiza a leitura da temperatura utilizando o sensor MPU6050 via comunicação I2C. Caso a porta permaneça aberta por mais tempo que o permitido ou seja detectada uma variação significativa de temperatura, o sistema entra em estado de alerta. Assim que as condições voltam ao normal e permanecem estáveis por um determinado período, o alarme é desativado automaticamente.
 
 **Interação com o usuário:** Toda a interação acontece no ambiente de simulação Wokwi. O botão representa a porta física, enquanto a temperatura pode ser alterada diretamente no sensor MPU6050 para simular diferentes cenários de funcionamento.
+
 ---
 
 ## Arquitetura do Sistema Embarcado
@@ -25,6 +26,7 @@
 **Controle do tempo:** As verificações acontecem a cada 100 ms. Para controlar o tempo que a porta permanece aberta e o período necessário para voltar ao estado normal, foram utilizadas as funções time.ticks_ms() e time.ticks_diff().
 
 **Comunicação entre os componentes:** O botão está ligado ao GPIO 14 e é usado para simular a porta. O sensor MPU6050 se comunica com o ESP32 via I2C, utilizando os pinos SDA (21) e SCL (22), enviando as informações de temperatura.
+
 ---
 
 ## Componentes Utilizados na Simulação
@@ -55,6 +57,7 @@ A simulação foi executada no Wokwi e todos os testes da esteira do GitHub Acti
 **Dificuldades encontradas:** A maior dificuldade foi ajustar os tempos do sistema para atender aos testes automáticos sem prejudicar o funcionamento da lógica do projeto.
 
 **Melhorias futuras:** Como melhoria, seria interessante adicionar comunicação via Wi-Fi para enviar alertas e informações do sistema em tempo real utilizando MQTT.
+
 ---
 
 > Este relatório faz parte da avaliação técnica.  
