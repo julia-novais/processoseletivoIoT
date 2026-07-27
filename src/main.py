@@ -1,95 +1,98 @@
-import machine
+"""
+Sistema de Monitoramento de Temperatura e Abertura de Porta
+(Smart Cooler / Estufa) - ESP32 + MPU6050 + Botão
+Firmware em MicroPython (sem funções bloqueantes longas no loop principal)
+"""
+
+from machine import Pin, I2C
 import time
 
-# ==========================================
-# 1. PARAMETRIZAÇÃO DO SISTEMA
-# ==========================================
-LIMITE_TEMPO_X = 5000       # 5 segundos para o alarme de porta
-LIMITE_VARIACAO_Y = 3.0     # Variação térmica
+# ------------------------------------------------------------------
+# Configuração de hardware
+# ------------------------------------------------------------------
+MPU_ADDR = 0x68
+PWR_MGMT_1 = 0x6B
+TEMP_OUT_H = 0x41
 
-# ==========================================
-# 2. CONFIGURAÇÃO DE HARDWARE
-# ==========================================
-pino_porta = machine.Pin(4, machine.Pin.IN, machine.Pin.PULL_DOWN)
-# Usando SoftI2C para evitar bugs de barramento no simulador
-i2c = machine.SoftI2C(scl=machine.Pin(22), sda=machine.Pin(21))
+BUTTON_PIN = 4
+I2C_SCL_PIN = 22
+I2C_SDA_PIN = 21
 
-try:
-    i2c.writeto_mem(0x68, 0x6B, b'\x00')
-except OSError:
-    pass
+# ------------------------------------------------------------------
+# Parâmetros do sistema
+# ------------------------------------------------------------------
+LIMITE_TEMPO_X = 5000      # ms - tempo máximo com a porta aberta
+LIMITE_VARIACAO_Y = 3.0    # °C - variação térmica tolerada
+INTERVALO_LOOP_MS = 100    # ciclo de amostragem (não bloqueante)
 
-def ler_temperatura():
-    """Lê a temperatura e retorna 20.0°C como fallback caso falhe na simulação"""
-    try:
-        raw = i2c.readfrom_mem(0x68, 0x41, 2)
-        val = raw[0] << 8 | raw[1]
-        if val > 32767:
-            val -= 65536
-        return (val / 340.0) + 36.53
-    except OSError:
-        return 20.0
+i2c = I2C(0, scl=Pin(I2C_SCL_PIN), sda=Pin(I2C_SDA_PIN), freq=400000)
 
-# ==========================================
-# 3. INICIALIZAÇÃO OBRIGATÓRIA
-# ==========================================
-print("Sistema de Monitoramento Inicializado")
+# Botão ligado ao 3V3 quando pressionado (porta fechada = 1),
+# pull-down interno mantém o pino em 0 quando solto (porta aberta = 0)
+btn = Pin(BUTTON_PIN, Pin.IN, Pin.PULL_DOWN)
 
-temp_referencia = 20.0 # Começa com um valor base, mas será atualizado
-tempo_inicio_abertura = 0
-alarme_porta = False
-alarme_temp = False
-sistema_normal = True
 
-# ==========================================
-# 4. LAÇO PRINCIPAL
-# ==========================================
-while True:
-    estado_porta = pino_porta.value() # 0 = Aberto, 1 = Fechado
-    porta_aberta = (estado_porta == 0)
-    
-    temp_atual = ler_temperatura()
-    
-    # Se o sistema está em paz e a porta fechada, a referência rastreia a temperatura atual.
-    # Isso impede que a configuração inicial do teste de CI dispare um alarme falso.
-    if sistema_normal and not porta_aberta:
-        delta_t = temp_atual - temp_referencia
-        
-        if delta_t >= LIMITE_VARIACAO_Y:
-            if not alarme_temp:
-                alarme_temp = True
-                sistema_normal = False
-                print("ALERTA: Degradacao termica detectada!")
-        else:
-            # Seguro atualizar a referência
-            temp_referencia = temp_atual
-    else:
-        # Se há alarme ou porta aberta, apenas calculamos o delta
-        delta_t = temp_atual - temp_referencia
+def mpu_init():
+    """Acorda o MPU6050 (sai do modo sleep)."""
+    i2c.writeto_mem(MPU_ADDR, PWR_MGMT_1, bytes([0]))
 
-    # --- Lógica B: Tempo de Porta Aberta ---
-    if porta_aberta:
-        if tempo_inicio_abertura == 0:
-            tempo_inicio_abertura = time.ticks_ms()
-        else:
-            tempo_decorrido = time.ticks_diff(time.ticks_ms(), tempo_inicio_abertura)
-            if tempo_decorrido >= LIMITE_TEMPO_X and not alarme_porta:
-                alarme_porta = True
-                sistema_normal = False
+
+def read_temp():
+    """Lê a temperatura interna do MPU6050 em graus Celsius."""
+    data = i2c.readfrom_mem(MPU_ADDR, TEMP_OUT_H, 2)
+    raw = (data[0] << 8) | data[1]
+    if raw > 32767:
+        raw -= 65536
+    return raw / 340.0 + 36.53
+
+
+def is_door_closed():
+    """Porta fechada quando o botão está pressionado (leitura = 1)."""
+    return btn.value() == 1
+
+
+def main():
+    mpu_init()
+    time.sleep_ms(100)
+    print("Sistema de Monitoramento Inicializado")
+
+    temp_referencia = read_temp()
+    porta_aberta_desde = None
+    alarme_porta_ativo = False
+    alarme_termico_ativo = False
+
+    while True:
+        porta_fechada = is_door_closed()
+        temp_atual = read_temp()
+        agora = time.ticks_ms()
+
+        # --- B. Lógica de tempo de porta aberta (Limite X) ---
+        if not porta_fechada:
+            if porta_aberta_desde is None:
+                porta_aberta_desde = agora
+            elif (not alarme_porta_ativo and
+                  time.ticks_diff(agora, porta_aberta_desde) >= LIMITE_TEMPO_X):
+                alarme_porta_ativo = True
                 print("ALERTA: Porta aberta por muito tempo!")
-    else:
-        tempo_inicio_abertura = 0
+        else:
+            porta_aberta_desde = None
 
-    # --- Lógica D: Normalização ---
-    if not sistema_normal:
-        if not porta_aberta and delta_t < LIMITE_VARIACAO_Y:
-            alarme_porta = False
-            alarme_temp = False
-            sistema_normal = True
-            
-            temp_referencia = temp_atual 
-            
+        # --- C. Lógica de elevação térmica (Variação Y) ---
+        delta_t = abs(temp_atual - temp_referencia)
+        if delta_t >= LIMITE_VARIACAO_Y and not alarme_termico_ativo:
+            alarme_termico_ativo = True
+            print("ALERTA: Degradacao termica detectada!")
+
+        # --- D. Lógica de normalização e restauração de estado ---
+        if (porta_fechada and delta_t < LIMITE_VARIACAO_Y and
+                (alarme_porta_ativo or alarme_termico_ativo)):
+            alarme_porta_ativo = False
+            alarme_termico_ativo = False
+            porta_aberta_desde = None
+            temp_referencia = temp_atual
             print("Status: Sistema Normalizado.")
-            
-    # Delay não bloqueante para rodar perfeitamente no Wokwi CI
-    time.sleep_ms(20)
+
+        time.sleep_ms(INTERVALO_LOOP_MS)
+
+
+main()
