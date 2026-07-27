@@ -1,115 +1,91 @@
-"""
-Sistema de Monitoramento de Temperatura e Abertura de Porta
-(Smart Cooler / Estufa) - ESP32 + MPU6050 + Botão
-Firmware em MicroPython (sem funções bloqueantes longas no loop principal)
-"""
-
-from machine import Pin, I2C
 import time
+from machine import Pin, I2C
 
-# ------------------------------------------------------------------
-# Configuração de hardware
-# ------------------------------------------------------------------
-MPU_ADDR = 0x68
-PWR_MGMT_1 = 0x6B
-TEMP_OUT_H = 0x41
+# Configuração dos Pinos
+btn1 = Pin(14, Pin.IN, Pin.PULL_UP)
+i2c = I2C(0, scl=Pin(22), sda=Pin(21), freq=400000)
 
-BUTTON_PIN = 4
-I2C_SCL_PIN = 22
-I2C_SDA_PIN = 21
+# Parâmetros de Limite
+LIMITE_TEMPO_X = 5000     
+LIMITE_VARIACAO_Y = 3.0   
 
-# ------------------------------------------------------------------
-# Parâmetros do sistema
-# ------------------------------------------------------------------
-LIMITE_TEMPO_X = 3500      # ms - tempo máximo com a porta aberta
-                           # (reduzido de 5000ms: a wokwi-ci-action roda com
-                           # timeout padrão de 10000ms, que não pode ser
-                           # alterado no ci.yml; com 5000ms + boot do ESP32 +
-                           # delays do cenário de teste, a simulação estourava
-                           # o tempo antes de imprimir o alerta)
-LIMITE_VARIACAO_Y = 3.0    # °C - variação térmica tolerada
-INTERVALO_LOOP_MS = 100    # ciclo de amostragem (não bloqueante)
-WARMUP_MS = 800            # janela inicial em que a referência de temp. é
-                           # continuamente recalibrada (evita capturar um
-                           # valor "de fábrica" do sensor antes do teste
-                           # aplicar a temperatura inicial esperada)
+# Variáveis de Controle de Estado
+tempo_abertura_porta = 0
+porta_estava_aberta = False
+alarme_porta_ativo = False
+alarme_termico_ativo = False
 
-i2c = I2C(0, scl=Pin(I2C_SCL_PIN), sda=Pin(I2C_SDA_PIN), freq=400000)
+temperatura_referencia = 20.0  
+referencia_capturada = False
+tempo_seguro_inicio = 0  
 
-# Botão ligado ao 3V3 quando pressionado (porta fechada = 1),
-# pull-down interno mantém o pino em 0 quando solto (porta aberta = 0)
-btn = Pin(BUTTON_PIN, Pin.IN, Pin.PULL_DOWN)
-
-
-def mpu_init():
-    """Acorda o MPU6050 (sai do modo sleep)."""
-    i2c.writeto_mem(MPU_ADDR, PWR_MGMT_1, bytes([0]))
-
-
-def read_temp():
-    """Lê a temperatura interna do MPU6050 em graus Celsius."""
-    data = i2c.readfrom_mem(MPU_ADDR, TEMP_OUT_H, 2)
-    raw = (data[0] << 8) | data[1]
-    if raw > 32767:
-        raw -= 65536
-    return raw / 340.0 + 36.53
-
-
-def is_door_closed():
-    """Porta fechada quando o botão está pressionado (leitura = 1)."""
-    return btn.value() == 1
-
+def ler_temperatura_mpu6050():
+    try:
+        dados = i2c.readfrom_mem(0x68, 0x41, 2)
+        temp = (int.from_bytes(dados, 'big') / 340.0) + 36.53
+        return temp
+    except Exception:
+        return 20.0
 
 def main():
-    mpu_init()
-    time.sleep_ms(100)
+    global tempo_abertura_porta, porta_estava_aberta, alarme_porta_ativo, alarme_termico_ativo
+    global temperatura_referencia, referencia_capturada, tempo_seguro_inicio
+
     print("Sistema de Monitoramento Inicializado")
 
-    temp_referencia = read_temp()
-    porta_aberta_desde = None
-    alarme_porta_ativo = False
-    alarme_termico_ativo = False
-
-    inicio = time.ticks_ms()
-
     while True:
-        porta_fechada = is_door_closed()
-        temp_atual = read_temp()
-        agora = time.ticks_ms()
-        em_warmup = time.ticks_diff(agora, inicio) < WARMUP_MS
+        estado_hardware = btn1.value()
+        status_porta = 1 if estado_hardware == 0 else 0
 
-        # Durante o warm-up, a referência acompanha a leitura atual para
-        # capturar o valor real definido pelo ambiente/teste antes de travar
-        if em_warmup:
-            temp_referencia = temp_atual
+        temperatura_atual = ler_temperatura_mpu6050()
 
-        # --- B. Lógica de tempo de porta aberta (Limite X) ---
-        if not porta_fechada:
-            if porta_aberta_desde is None:
-                porta_aberta_desde = agora
-            elif (not alarme_porta_ativo and
-                  time.ticks_diff(agora, porta_aberta_desde) >= LIMITE_TEMPO_X):
-                alarme_porta_ativo = True
-                print("ALERTA: Porta aberta por muito tempo!")
+        if status_porta == 1:
+            if not referencia_capturada:
+                temperatura_referencia = temperatura_atual
+                referencia_capturada = True
+        
+        tempo_atual_ms = time.ticks_ms()
+        
+        
+        if status_porta == 0:  
+            if not porta_estava_aberta:
+                tempo_abertura_porta = tempo_atual_ms
+                porta_estava_aberta = True
+            else:
+                if not alarme_porta_ativo and (time.ticks_diff(tempo_atual_ms, tempo_abertura_porta) >= LIMITE_TEMPO_X):
+                    print("ALERTA: Porta aberta por muito tempo!")
+                    alarme_porta_ativo = True
+        else:  
+            porta_estava_aberta = False
+
+       
+        if referencia_capturada:
+            delta_t = temperatura_atual - temperatura_referencia
+            if delta_t >= LIMITE_VARIACAO_Y and not alarme_termico_ativo:
+                print("ALERTA: Degradacao termica detectada!")
+                alarme_termico_ativo = True
+
+        
+        delta_t_atual = temperatura_atual - temperatura_referencia if referencia_capturada else 0.0
+        condicao_porta_segura = (status_porta == 1)
+        condicao_termica_segura = (delta_t_atual < LIMITE_VARIACAO_Y)
+
+        if condicao_porta_segura and condicao_termica_segura:
+            if tempo_seguro_inicio == 0:
+                
+                tempo_seguro_inicio = tempo_atual_ms
+            
+
+            elif time.ticks_diff(tempo_atual_ms, tempo_seguro_inicio) >= 1000:
+                if alarme_porta_ativo or alarme_termico_ativo:
+                    print("Status: Sistema Normalizado.")
+                    alarme_porta_ativo = False
+                    alarme_termico_ativo = False
+                    referencia_capturada = False  
         else:
-            porta_aberta_desde = None
+            tempo_seguro_inicio = 0  
 
-        # --- C. Lógica de elevação térmica (Variação Y) ---
-        delta_t = abs(temp_atual - temp_referencia)
-        if not em_warmup and delta_t >= LIMITE_VARIACAO_Y and not alarme_termico_ativo:
-            alarme_termico_ativo = True
-            print("ALERTA: Degradacao termica detectada!")
+        time.sleep_ms(100)
 
-        # --- D. Lógica de normalização e restauração de estado ---
-        if (not em_warmup and porta_fechada and delta_t < LIMITE_VARIACAO_Y and
-                (alarme_porta_ativo or alarme_termico_ativo)):
-            alarme_porta_ativo = False
-            alarme_termico_ativo = False
-            porta_aberta_desde = None
-            temp_referencia = temp_atual
-            print("Status: Sistema Normalizado.")
-
-        time.sleep_ms(INTERVALO_LOOP_MS)
-
-
-main()
+if __name__ == "__main__":
+    main()
