@@ -3,15 +3,14 @@ import time
 
 # ==========================================
 # 1. PARAMETRIZAÇÃO DO SISTEMA
-LIMITE_TEMPO_X = 1500       # Reduzido de 5000 para 1500ms para passar no tempo da CI
+LIMITE_TEMPO_X = 5000       # Retornado para 5000ms para alinhar com o CI
 LIMITE_VARIACAO_Y = 3.0     # Mantém a variação de temperatura em 3 graus
 
 # ==========================================
 # 2. CONFIGURAÇÃO DE HARDWARE
 # ==========================================
-# Botão (Fim de curso da Porta)
-# Pelo diagrama, btn1: 0 = Aberto (Solto), btn1: 1 = Fechado (Pressionado)
-pino_porta = machine.Pin(4, machine.Pin.IN, machine.Pin.PULL_UP)
+# Configuração PULL_DOWN: Garante que Pressionado = 1 e Solto = 0
+pino_porta = machine.Pin(4, machine.Pin.IN, machine.Pin.PULL_DOWN)
 
 # Configuração I2C para o MPU6050 (Pinos 21 SDA, 22 SCL)
 i2c = machine.I2C(0, scl=machine.Pin(22), sda=machine.Pin(21))
@@ -53,7 +52,7 @@ sistema_normal = True
 # ==========================================
 while True:
     # --- Leituras de Sensores ---
-    estado_porta = pino_porta.value() # 0 = Aberto, 1 = Fechado
+    estado_porta = pino_porta.value() # Agora: 0 = Aberto, 1 = Fechado
     porta_aberta = (estado_porta == 0)
     
     temp_atual = ler_temperatura()
@@ -82,7 +81,6 @@ while True:
         sistema_normal = False
 
     # --- Lógica D: Normalização ---
-    # Só normaliza se a porta estiver fechada E a temperatura voltar ao gradiente aceitável
     if not sistema_normal:
         if not porta_aberta and delta_t < LIMITE_VARIACAO_Y:
             alarme_porta = False
@@ -94,5 +92,5 @@ while True:
             
             print("Status: Sistema Normalizado.")
             
-    # Pequeno delay para evitar sobrecarga na CPU (non-blocking style)
-    time.sleep(0.1)
+    # Reduzido para 10ms (non-blocking) para não perder o timing do Wokwi CI
+    time.sleep_ms(10)
